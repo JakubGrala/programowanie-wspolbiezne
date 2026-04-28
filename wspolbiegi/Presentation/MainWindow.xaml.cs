@@ -1,13 +1,11 @@
 using System.Windows;
 
-namespace Presentation
+namespace Presentation;
+
+public partial class MainWindow : Window
 {
-    public partial class MainWindow : Window
+    public MainWindow()
     {
-        public MainWindow(MainViewModel viewModel)
-        {
-            InitializeComponent();
-            DataContext = viewModel;
-        }
+        InitializeComponent();
     }
 }

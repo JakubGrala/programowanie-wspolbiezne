@@ -5,6 +5,24 @@ using Data;
 
 namespace Logic;
 
+/// <summary>
+/// Represents a displacement vector (length and direction in the plane) used for random motion steps.
+/// </summary>
+public readonly struct Velocity2D
+{
+    public Velocity2D(double deltaX, double deltaY)
+    {
+        DeltaX = deltaX;
+        DeltaY = deltaY;
+    }
+
+    public double DeltaX { get; }
+
+    public double DeltaY { get; }
+
+    public double Magnitude => Math.Sqrt((DeltaX * DeltaX) + (DeltaY * DeltaY));
+}
+
 public sealed class LogicBall
 {
     public LogicBall(double x, double y, double radius)
@@ -28,6 +46,14 @@ public interface ILogicApi
     IReadOnlyCollection<LogicBall> PlaceBalls(int count, double radius);
 
     IReadOnlyCollection<LogicBall> GetBalls();
+
+    void StartSimulation();
+
+    void StopSimulation();
+
+    bool IsSimulationRunning { get; }
+
+    void SimulationTick();
 }
 
 public interface IRandomProvider
@@ -44,9 +70,12 @@ public sealed class DefaultRandomProvider : IRandomProvider
 
 public sealed class LogicApi : ILogicApi
 {
+    private const double MaxStepPerTick = 18.0;
+
     private readonly IDataApi dataApi;
     private readonly IRandomProvider randomProvider;
     private Plane? currentPlane;
+    private bool simulationRunning;
 
     public LogicApi(IDataApi dataApi, IRandomProvider randomProvider)
     {
@@ -54,10 +83,13 @@ public sealed class LogicApi : ILogicApi
         this.randomProvider = randomProvider ?? throw new ArgumentNullException(nameof(randomProvider));
     }
 
+    public bool IsSimulationRunning => simulationRunning;
+
     public void CreatePlane(double width, double height)
     {
         currentPlane = new Plane(width, height);
         dataApi.ClearBalls();
+        simulationRunning = false;
     }
 
     public IReadOnlyCollection<LogicBall> PlaceBalls(int count, double radius)
@@ -96,6 +128,66 @@ public sealed class LogicApi : ILogicApi
             .Select(ball => new LogicBall(ball.X, ball.Y, ball.Radius))
             .ToList()
             .AsReadOnly();
+
+    public void StartSimulation()
+    {
+        _ = currentPlane ?? throw new InvalidOperationException("Create plane before starting simulation.");
+
+        if (!dataApi.GetBalls().Any())
+        {
+            throw new InvalidOperationException("Place balls before starting simulation.");
+        }
+
+        simulationRunning = true;
+    }
+
+    public void StopSimulation() => simulationRunning = false;
+
+    public void SimulationTick()
+    {
+        if (!simulationRunning)
+        {
+            return;
+        }
+
+        Plane plane = currentPlane ?? throw new InvalidOperationException("Plane is not initialized.");
+
+        foreach (Ball ball in dataApi.GetBalls())
+        {
+            Velocity2D step = CreateRandomStep();
+            double candidateX = ball.X + step.DeltaX;
+            double candidateY = ball.Y + step.DeltaY;
+
+            double clampedX = Clamp(candidateX, ball.Radius, plane.Width - ball.Radius);
+            double clampedY = Clamp(candidateY, ball.Radius, plane.Height - ball.Radius);
+
+            dataApi.UpdateBall(ball, clampedX, clampedY);
+        }
+    }
+
+    private Velocity2D CreateRandomStep()
+    {
+        double angle = randomProvider.NextDouble() * Math.PI * 2;
+        double length = randomProvider.NextDouble() * MaxStepPerTick;
+        double deltaX = Math.Cos(angle) * length;
+        double deltaY = Math.Sin(angle) * length;
+        return new Velocity2D(deltaX, deltaY);
+    }
+
+    private static double Clamp(double value, double min, double max)
+    {
+        if (value < min)
+        {
+            return min;
+        }
+
+        if (value > max)
+        {
+            return max;
+        }
+
+        return value;
+    }
 
     private sealed class Plane
     {

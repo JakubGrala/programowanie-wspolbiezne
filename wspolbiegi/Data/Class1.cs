@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace Data;
 
@@ -17,11 +18,17 @@ public sealed class Ball
         Radius = radius;
     }
 
-    public double X { get; }
+    public double X { get; private set; }
 
-    public double Y { get; }
+    public double Y { get; private set; }
 
     public double Radius { get; }
+
+    public void SetPosition(double x, double y)
+    {
+        X = x;
+        Y = y;
+    }
 }
 
 public interface IBallRepository
@@ -31,6 +38,8 @@ public interface IBallRepository
     IReadOnlyCollection<Ball> GetAll();
 
     void Clear();
+
+    void UpdatePosition(Ball ball, double x, double y);
 }
 
 public sealed class InMemoryBallRepository : IBallRepository
@@ -47,6 +56,16 @@ public sealed class InMemoryBallRepository : IBallRepository
     public IReadOnlyCollection<Ball> GetAll() => balls.AsReadOnly();
 
     public void Clear() => balls.Clear();
+
+    public void UpdatePosition(Ball ball, double x, double y)
+    {
+        if (!balls.Contains(ball))
+        {
+            throw new InvalidOperationException("Ball is not tracked by this repository.");
+        }
+
+        ball.SetPosition(x, y);
+    }
 }
 
 public interface IDataApi
@@ -56,6 +75,8 @@ public interface IDataApi
     IReadOnlyCollection<Ball> GetBalls();
 
     void ClearBalls();
+
+    void UpdateBall(Ball ball, double x, double y);
 }
 
 public sealed class DataApi : IDataApi
@@ -72,4 +93,6 @@ public sealed class DataApi : IDataApi
     public IReadOnlyCollection<Ball> GetBalls() => repository.GetAll();
 
     public void ClearBalls() => repository.Clear();
+
+    public void UpdateBall(Ball ball, double x, double y) => repository.UpdatePosition(ball, x, y);
 }
