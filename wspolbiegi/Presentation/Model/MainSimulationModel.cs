@@ -3,9 +3,6 @@ using Logic;
 
 namespace Presentation.Model;
 
-/// <summary>
-/// GUI model: maps logical coordinates from the logic layer to scaled pixel coordinates for the view.
-/// </summary>
 public sealed class MainSimulationModel
 {
     private readonly double logicalPlaneWidth;

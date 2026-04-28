@@ -5,9 +5,6 @@ using Data;
 
 namespace Logic;
 
-/// <summary>
-/// Represents a displacement vector (length and direction in the plane) used for random motion steps.
-/// </summary>
 public readonly struct Velocity2D
 {
     public Velocity2D(double deltaX, double deltaY)
