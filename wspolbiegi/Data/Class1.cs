@@ -4,79 +4,157 @@ using System.Linq;
 
 namespace Data;
 
+public readonly struct BallSnapshot
+{
+    public BallSnapshot(Ball ball, double x, double y, double radius, double mass, double velocityX, double velocityY)
+    {
+        Ball = ball;
+        X = x;
+        Y = y;
+        Radius = radius;
+        Mass = mass;
+        VelocityX = velocityX;
+        VelocityY = velocityY;
+    }
+
+    public Ball Ball { get; }
+
+    public double X { get; }
+
+    public double Y { get; }
+
+    public double Radius { get; }
+
+    public double Mass { get; }
+
+    public double VelocityX { get; }
+
+    public double VelocityY { get; }
+}
+
 public sealed class Ball
 {
-    public Ball(double x, double y, double radius)
+    private readonly object sync = new();
+    private double x;
+    private double y;
+    private double velocityX;
+    private double velocityY;
+
+    public Ball(double x, double y, double radius, double mass, double velocityX, double velocityY)
     {
         if (radius <= 0)
         {
             throw new ArgumentOutOfRangeException(nameof(radius), "Radius must be greater than zero.");
         }
 
-        X = x;
-        Y = y;
+        if (mass <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(mass), "Mass must be greater than zero.");
+        }
+
+        this.x = x;
+        this.y = y;
         Radius = radius;
+        Mass = mass;
+        this.velocityX = velocityX;
+        this.velocityY = velocityY;
     }
-
-    public double X { get; private set; }
-
-    public double Y { get; private set; }
 
     public double Radius { get; }
 
-    public void SetPosition(double x, double y)
+    public double Mass { get; }
+
+    public BallSnapshot GetSnapshot()
     {
-        X = x;
-        Y = y;
+        lock (sync)
+        {
+            return new BallSnapshot(this, x, y, Radius, Mass, velocityX, velocityY);
+        }
+    }
+
+    public void Advance(double deltaSeconds)
+    {
+        lock (sync)
+        {
+            x += velocityX * deltaSeconds;
+            y += velocityY * deltaSeconds;
+        }
+    }
+
+    public void SetPosition(double newX, double newY)
+    {
+        lock (sync)
+        {
+            x = newX;
+            y = newY;
+        }
+    }
+
+    public void SetVelocity(double newVelocityX, double newVelocityY)
+    {
+        lock (sync)
+        {
+            velocityX = newVelocityX;
+            velocityY = newVelocityY;
+        }
     }
 }
 
 public interface IBallRepository
 {
-    Ball Add(double x, double y, double radius);
+    Ball Add(double x, double y, double radius, double mass, double velocityX, double velocityY);
 
-    IReadOnlyCollection<Ball> GetAll();
+    IReadOnlyList<Ball> GetAll();
 
     void Clear();
-
-    void UpdatePosition(Ball ball, double x, double y);
 }
 
 public sealed class InMemoryBallRepository : IBallRepository
 {
+    private readonly object sync = new();
     private readonly List<Ball> balls = [];
 
-    public Ball Add(double x, double y, double radius)
+    public Ball Add(double x, double y, double radius, double mass, double velocityX, double velocityY)
     {
-        Ball ball = new(x, y, radius);
-        balls.Add(ball);
+        Ball ball = new(x, y, radius, mass, velocityX, velocityY);
+        lock (sync)
+        {
+            balls.Add(ball);
+        }
+
         return ball;
     }
 
-    public IReadOnlyCollection<Ball> GetAll() => balls.AsReadOnly();
-
-    public void Clear() => balls.Clear();
-
-    public void UpdatePosition(Ball ball, double x, double y)
+    public IReadOnlyList<Ball> GetAll()
     {
-        if (!balls.Contains(ball))
+        lock (sync)
         {
-            throw new InvalidOperationException("Ball is not tracked by this repository.");
+            return balls.ToList().AsReadOnly();
         }
+    }
 
-        ball.SetPosition(x, y);
+    public void Clear()
+    {
+        lock (sync)
+        {
+            balls.Clear();
+        }
     }
 }
 
 public interface IDataApi
 {
-    Ball CreateBall(double x, double y, double radius);
+    Ball CreateBall(double x, double y, double radius, double mass, double velocityX, double velocityY);
 
-    IReadOnlyCollection<Ball> GetBalls();
+    IReadOnlyList<BallSnapshot> GetSnapshots();
 
     void ClearBalls();
 
-    void UpdateBall(Ball ball, double x, double y);
+    void AdvanceAll(double deltaSeconds);
+
+    void SetPosition(Ball ball, double x, double y);
+
+    void SetVelocity(Ball ball, double velocityX, double velocityY);
 }
 
 public sealed class DataApi : IDataApi
@@ -88,11 +166,23 @@ public sealed class DataApi : IDataApi
         this.repository = repository ?? throw new ArgumentNullException(nameof(repository));
     }
 
-    public Ball CreateBall(double x, double y, double radius) => repository.Add(x, y, radius);
+    public Ball CreateBall(double x, double y, double radius, double mass, double velocityX, double velocityY) =>
+        repository.Add(x, y, radius, mass, velocityX, velocityY);
 
-    public IReadOnlyCollection<Ball> GetBalls() => repository.GetAll();
+    public IReadOnlyList<BallSnapshot> GetSnapshots() =>
+        repository.GetAll().Select(ball => ball.GetSnapshot()).ToList().AsReadOnly();
 
     public void ClearBalls() => repository.Clear();
 
-    public void UpdateBall(Ball ball, double x, double y) => repository.UpdatePosition(ball, x, y);
+    public void AdvanceAll(double deltaSeconds)
+    {
+        foreach (Ball ball in repository.GetAll())
+        {
+            ball.Advance(deltaSeconds);
+        }
+    }
+
+    public void SetPosition(Ball ball, double x, double y) => ball.SetPosition(x, y);
+
+    public void SetVelocity(Ball ball, double velocityX, double velocityY) => ball.SetVelocity(velocityX, velocityY);
 }

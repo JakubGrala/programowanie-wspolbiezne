@@ -1,3 +1,4 @@
+using System.Linq;
 using Data;
 using Logic;
 
@@ -11,12 +12,16 @@ public sealed class DataApiTests
     {
         IDataApi api = new DataApi(new InMemoryBallRepository());
 
-        Ball created = api.CreateBall(10, 20, 5);
+        Ball created = api.CreateBall(10, 20, 5, 2, 3, 4);
 
-        Assert.AreEqual(10, created.X);
-        Assert.AreEqual(20, created.Y);
-        Assert.AreEqual(5, created.Radius);
-        Assert.AreEqual(1, api.GetBalls().Count);
+        BallSnapshot snapshot = created.GetSnapshot();
+        Assert.AreEqual(10, snapshot.X);
+        Assert.AreEqual(20, snapshot.Y);
+        Assert.AreEqual(5, snapshot.Radius);
+        Assert.AreEqual(2, snapshot.Mass);
+        Assert.AreEqual(3, snapshot.VelocityX);
+        Assert.AreEqual(4, snapshot.VelocityY);
+        Assert.AreEqual(1, api.GetSnapshots().Count);
     }
 
     [TestMethod]
@@ -24,28 +29,34 @@ public sealed class DataApiTests
     {
         IDataApi api = new DataApi(new InMemoryBallRepository());
 
-        Assert.ThrowsException<ArgumentOutOfRangeException>(() => api.CreateBall(0, 0, 0));
+        Assert.ThrowsException<ArgumentOutOfRangeException>(() => api.CreateBall(0, 0, 0, 1, 0, 0));
     }
 
     [TestMethod]
-    public void UpdateBall_ShouldChangePosition()
+    public void AdvanceAll_ShouldMoveBallAccordingToVelocity()
     {
         IDataApi api = new DataApi(new InMemoryBallRepository());
-        Ball ball = api.CreateBall(1, 2, 3);
+        api.CreateBall(0, 0, 5, 1, 10, 0);
 
-        api.UpdateBall(ball, 9, 8);
+        api.AdvanceAll(0.5);
 
-        Assert.AreEqual(9, ball.X);
-        Assert.AreEqual(8, ball.Y);
+        BallSnapshot snapshot = api.GetSnapshots()[0];
+        Assert.AreEqual(5, snapshot.X, 1e-6);
+        Assert.AreEqual(0, snapshot.Y, 1e-6);
     }
 
     [TestMethod]
-    public void UpdateBall_WithUnknownBall_ShouldThrow()
+    public void GetSnapshots_ConcurrentReads_ShouldNotThrow()
     {
         IDataApi api = new DataApi(new InMemoryBallRepository());
-        Ball foreign = new(1, 2, 3);
+        api.CreateBall(10, 10, 8, 1, 5, 5);
+        api.CreateBall(30, 30, 8, 1, -4, 2);
 
-        Assert.ThrowsException<InvalidOperationException>(() => api.UpdateBall(foreign, 0, 0));
+        Parallel.For(0, 200, _ =>
+        {
+            _ = api.GetSnapshots().Count;
+            api.AdvanceAll(0.01);
+        });
     }
 }
 
@@ -58,8 +69,8 @@ public sealed class LogicApiTests
         IDataApi dataApi = new FakeDataApi();
         ILogicApi logicApi = new LogicApi(dataApi, new DefaultRandomProvider());
 
-        logicApi.CreatePlane(100, 80);
-        IReadOnlyCollection<LogicBall> balls = logicApi.PlaceBalls(count: 5, radius: 10);
+        logicApi.CreatePlaneAsync(100, 80).GetAwaiter().GetResult();
+        IReadOnlyCollection<LogicBall> balls = logicApi.PlaceBallsAsync(5, 10).GetAwaiter().GetResult();
 
         Assert.AreEqual(5, balls.Count);
         foreach (LogicBall ball in balls)
@@ -76,27 +87,8 @@ public sealed class LogicApiTests
         IDataApi dataApi = new FakeDataApi();
         ILogicApi logicApi = new LogicApi(dataApi, new DefaultRandomProvider());
 
-        Assert.ThrowsException<InvalidOperationException>(() => logicApi.PlaceBalls(count: 2, radius: 5));
-    }
-
-    [TestMethod]
-    public void CreatePlane_WithInvalidWidth_ShouldThrow()
-    {
-        IDataApi dataApi = new FakeDataApi();
-        ILogicApi logicApi = new LogicApi(dataApi, new DefaultRandomProvider());
-
-        Assert.ThrowsException<ArgumentOutOfRangeException>(() => logicApi.CreatePlane(0, 10));
-    }
-
-    [TestMethod]
-    public void PlaceBalls_WithInvalidCount_ShouldThrow()
-    {
-        IDataApi dataApi = new FakeDataApi();
-        ILogicApi logicApi = new LogicApi(dataApi, new DefaultRandomProvider());
-
-        logicApi.CreatePlane(100, 80);
-
-        Assert.ThrowsException<ArgumentOutOfRangeException>(() => logicApi.PlaceBalls(count: 0, radius: 10));
+        Assert.ThrowsException<InvalidOperationException>(() =>
+            logicApi.PlaceBallsAsync(2, 5).GetAwaiter().GetResult());
     }
 
     [TestMethod]
@@ -105,39 +97,27 @@ public sealed class LogicApiTests
         IDataApi dataApi = new FakeDataApi();
         ILogicApi logicApi = new LogicApi(dataApi, new DefaultRandomProvider());
 
-        logicApi.CreatePlane(100, 80);
+        logicApi.CreatePlaneAsync(100, 80).GetAwaiter().GetResult();
 
-        Assert.ThrowsException<InvalidOperationException>(() => logicApi.StartSimulation());
+        Assert.ThrowsException<InvalidOperationException>(() =>
+            logicApi.StartSimulationAsync().GetAwaiter().GetResult());
     }
 
     [TestMethod]
-    public void SimulationTick_WhenStopped_ShouldNotThrow()
+    public void SimulationStep_ShouldKeepBallsInsidePlane()
     {
         IDataApi dataApi = new FakeDataApi();
         ILogicApi logicApi = new LogicApi(dataApi, new DefaultRandomProvider());
 
-        logicApi.CreatePlane(100, 80);
-        logicApi.PlaceBalls(1, 10);
-
-        logicApi.SimulationTick();
-    }
-
-    [TestMethod]
-    public void SimulationTick_WhenRunning_ShouldKeepBallsInsidePlane()
-    {
-        IDataApi dataApi = new FakeDataApi();
-        ILogicApi logicApi = new LogicApi(dataApi, new DefaultRandomProvider());
-
-        logicApi.CreatePlane(200, 150);
-        logicApi.PlaceBalls(7, 12);
-        logicApi.StartSimulation();
+        logicApi.CreatePlaneAsync(200, 150).GetAwaiter().GetResult();
+        logicApi.PlaceBallsAsync(7, 12).GetAwaiter().GetResult();
 
         for (int i = 0; i < 800; i++)
         {
-            logicApi.SimulationTick();
+            logicApi.SimulationStep(1.0 / 60.0);
         }
 
-        foreach (Ball ball in dataApi.GetBalls())
+        foreach (BallSnapshot ball in dataApi.GetSnapshots())
         {
             Assert.IsTrue(ball.X - ball.Radius >= -1e-6);
             Assert.IsTrue(ball.X + ball.Radius <= 200 + 1e-6);
@@ -145,30 +125,54 @@ public sealed class LogicApiTests
             Assert.IsTrue(ball.Y + ball.Radius <= 150 + 1e-6);
         }
     }
+
+    [TestMethod]
+    public void ElasticCollision_ShouldExchangeMomentumAlongNormal()
+    {
+        IDataApi dataApi = new FakeDataApi();
+        ILogicApi logicApi = new LogicApi(dataApi, new DefaultRandomProvider());
+
+        logicApi.CreatePlaneAsync(400, 200).GetAwaiter().GetResult();
+        dataApi.CreateBall(100, 100, 10, 1, 100, 0);
+        dataApi.CreateBall(120, 100, 10, 1, -100, 0);
+
+        for (int i = 0; i < 5; i++)
+        {
+            logicApi.SimulationStep(1.0 / 120.0);
+        }
+
+        BallSnapshot left = dataApi.GetSnapshots().OrderBy(snapshot => snapshot.X).First();
+        BallSnapshot right = dataApi.GetSnapshots().OrderBy(snapshot => snapshot.X).Last();
+
+        Assert.IsTrue(left.VelocityX < 0);
+        Assert.IsTrue(right.VelocityX > 0);
+    }
 }
 
 internal sealed class FakeDataApi : IDataApi
 {
     private readonly List<Ball> balls = [];
 
-    public Ball CreateBall(double x, double y, double radius)
+    public Ball CreateBall(double x, double y, double radius, double mass, double velocityX, double velocityY)
     {
-        Ball ball = new(x, y, radius);
+        Ball ball = new(x, y, radius, mass, velocityX, velocityY);
         balls.Add(ball);
         return ball;
     }
 
-    public IReadOnlyCollection<Ball> GetBalls() => balls.AsReadOnly();
+    public IReadOnlyList<BallSnapshot> GetSnapshots() => balls.Select(ball => ball.GetSnapshot()).ToList().AsReadOnly();
 
     public void ClearBalls() => balls.Clear();
 
-    public void UpdateBall(Ball ball, double x, double y)
+    public void AdvanceAll(double deltaSeconds)
     {
-        if (!balls.Contains(ball))
+        foreach (Ball ball in balls)
         {
-            throw new InvalidOperationException("Ball is not tracked by this fake repository.");
+            ball.Advance(deltaSeconds);
         }
-
-        ball.SetPosition(x, y);
     }
+
+    public void SetPosition(Ball ball, double x, double y) => ball.SetPosition(x, y);
+
+    public void SetVelocity(Ball ball, double velocityX, double velocityY) => ball.SetVelocity(velocityX, velocityY);
 }

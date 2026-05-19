@@ -16,10 +16,6 @@ public sealed class MainSimulationModel
 
     public ObservableCollection<BallDisplayModel> Balls { get; } = [];
 
-    public double LogicalPlaneWidth => logicalPlaneWidth;
-
-    public double LogicalPlaneHeight => logicalPlaneHeight;
-
     public void SyncFromLogic(IReadOnlyCollection<LogicBall> logicBalls, double viewportWidth, double viewportHeight)
     {
         if (viewportWidth <= 0 || viewportHeight <= 0)
@@ -40,7 +36,7 @@ public sealed class MainSimulationModel
                 Balls.Add(new BallDisplayModel());
             }
 
-            Balls[index].SetLogical(ball.X, ball.Y, ball.Radius);
+            Balls[index].SetLogical(ball.X, ball.Y, ball.Radius, ball.Mass);
             index++;
         }
 

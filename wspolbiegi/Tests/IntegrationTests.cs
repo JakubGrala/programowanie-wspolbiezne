@@ -12,16 +12,15 @@ public sealed class IntegrationTests
         IDataApi dataApi = new DataApi(new InMemoryBallRepository());
         ILogicApi logicApi = new LogicApi(dataApi, new DefaultRandomProvider());
 
-        logicApi.CreatePlane(220, 160);
-        logicApi.PlaceBalls(10, 14);
-        logicApi.StartSimulation();
+        logicApi.CreatePlaneAsync(220, 160).GetAwaiter().GetResult();
+        logicApi.PlaceBallsAsync(10, 14).GetAwaiter().GetResult();
 
         for (int i = 0; i < 1200; i++)
         {
-            logicApi.SimulationTick();
+            logicApi.SimulationStep(1.0 / 60.0);
         }
 
-        foreach (Ball ball in dataApi.GetBalls())
+        foreach (BallSnapshot ball in dataApi.GetSnapshots())
         {
             Assert.IsTrue(ball.X - ball.Radius >= -1e-6);
             Assert.IsTrue(ball.X + ball.Radius <= 220 + 1e-6);

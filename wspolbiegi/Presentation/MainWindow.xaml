@@ -6,7 +6,7 @@
         xmlns:model="clr-namespace:Presentation.Model"
         xmlns:attached="clr-namespace:Presentation.Attached"
         mc:Ignorable="d"
-        Title="Symulator Kul — Etap 1" Height="560" Width="900">
+        Title="Kulki" Height="560" Width="900">
     <Grid Margin="12">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
@@ -55,11 +55,11 @@
                 </ItemsControl.ItemContainerStyle>
                 <ItemsControl.ItemTemplate>
                     <DataTemplate DataType="{x:Type model:BallDisplayModel}">
-                        <Ellipse Width="{Binding DisplayDiameter}"
-                                 Height="{Binding DisplayDiameter}"
-                                 Fill="CornflowerBlue"
-                                 Stroke="MidnightBlue"
-                                 StrokeThickness="1.5" />
+                            <Ellipse Width="{Binding DisplayDiameter}"
+                                     Height="{Binding DisplayDiameter}"
+                                     Fill="{Binding Fill}"
+                                     Stroke="MidnightBlue"
+                                     StrokeThickness="1.5" />
                     </DataTemplate>
                 </ItemsControl.ItemTemplate>
             </ItemsControl>

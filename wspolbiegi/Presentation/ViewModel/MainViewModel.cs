@@ -1,9 +1,9 @@
 using System;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Input;
-using System.Windows.Threading;
 using Logic;
 using Presentation.Model;
 
@@ -18,27 +18,24 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public const double BallRadius = 18;
 
     private readonly ILogicApi logicApi;
-    private readonly DispatcherTimer simulationTimer;
     private double lastHostWidth;
     private double lastHostHeight;
     private string ballCountText = "8";
+    private bool hasBalls;
+    private IReadOnlyCollection<LogicBall>? lastBalls;
 
     public MainViewModel(ILogicApi logicApi)
     {
         this.logicApi = logicApi ?? throw new ArgumentNullException(nameof(logicApi));
         SimulationModel = new MainSimulationModel(LogicalPlaneWidth, LogicalPlaneHeight);
 
-        ApplyBallsCommand = new RelayCommand(ApplyBallsFromInput, () => !logicApi.IsSimulationRunning);
-        StartSimulationCommand = new RelayCommand(StartSimulation, CanStartSimulation);
-        StopSimulationCommand = new RelayCommand(StopSimulation, () => logicApi.IsSimulationRunning);
+        ApplyBallsCommand = new AsyncRelayCommand(ApplyBallsFromInputAsync, () => !logicApi.IsSimulationRunning);
+        StartSimulationCommand = new AsyncRelayCommand(StartSimulationAsync, CanStartSimulation);
+        StopSimulationCommand = new AsyncRelayCommand(StopSimulationAsync, () => logicApi.IsSimulationRunning);
 
-        simulationTimer = new DispatcherTimer(DispatcherPriority.Normal)
-        {
-            Interval = TimeSpan.FromMilliseconds(50),
-        };
-        simulationTimer.Tick += OnSimulationTimerTick;
+        this.logicApi.BallsUpdated += OnBallsUpdated;
 
-        _ = Application.Current.Dispatcher.BeginInvoke(new Action(ApplyBallsFromInput), DispatcherPriority.Loaded);
+        _ = Application.Current.Dispatcher.BeginInvoke(new Action(() => _ = ApplyBallsFromInputAsync()), System.Windows.Threading.DispatcherPriority.Loaded);
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
@@ -70,20 +67,30 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     {
         lastHostWidth = width;
         lastHostHeight = height;
-        RefreshVisualization();
+
+        if (lastBalls is not null)
+        {
+            RefreshVisualization(lastBalls);
+        }
     }
 
     public void Dispose()
     {
-        simulationTimer.Stop();
-        simulationTimer.Tick -= OnSimulationTimerTick;
-        logicApi.StopSimulation();
+        logicApi.BallsUpdated -= OnBallsUpdated;
+        _ = StopSimulationAsync();
     }
 
-    private bool CanStartSimulation() =>
-        !logicApi.IsSimulationRunning && logicApi.GetBalls().Count > 0;
+    private void OnBallsUpdated(object? sender, BallsUpdatedEventArgs e)
+    {
+        _ = Application.Current.Dispatcher.BeginInvoke(() =>
+        {
+            RefreshVisualization(e.Balls);
+        });
+    }
 
-    private void ApplyBallsFromInput()
+    private bool CanStartSimulation() => !logicApi.IsSimulationRunning && hasBalls;
+
+    private async Task ApplyBallsFromInputAsync()
     {
         if (logicApi.IsSimulationRunning)
         {
@@ -95,37 +102,31 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             return;
         }
 
-        logicApi.CreatePlane(LogicalPlaneWidth, LogicalPlaneHeight);
-        logicApi.PlaceBalls(count, BallRadius);
-        RefreshVisualization();
+        await logicApi.CreatePlaneAsync(LogicalPlaneWidth, LogicalPlaneHeight).ConfigureAwait(true);
+        IReadOnlyCollection<LogicBall> balls = await logicApi.PlaceBallsAsync(count, BallRadius).ConfigureAwait(true);
+        hasBalls = balls.Count > 0;
+        RefreshVisualization(balls);
         InvalidateCommands();
     }
 
-    private void StartSimulation()
+    private async Task StartSimulationAsync()
     {
-        logicApi.StartSimulation();
-        simulationTimer.Start();
+        await logicApi.StartSimulationAsync().ConfigureAwait(true);
         InvalidateCommands();
     }
 
-    private void StopSimulation()
+    private async Task StopSimulationAsync()
     {
-        simulationTimer.Stop();
-        logicApi.StopSimulation();
+        await logicApi.StopSimulationAsync().ConfigureAwait(true);
         InvalidateCommands();
     }
 
-    private void OnSimulationTimerTick(object? sender, EventArgs e)
+    private void RefreshVisualization(IReadOnlyCollection<LogicBall> balls)
     {
-        logicApi.SimulationTick();
-        RefreshVisualization();
-    }
-
-    private void RefreshVisualization()
-    {
+        lastBalls = balls;
         double width = lastHostWidth > 0 ? lastHostWidth : LogicalPlaneWidth;
         double height = lastHostHeight > 0 ? lastHostHeight : LogicalPlaneHeight;
-        SimulationModel.SyncFromLogic(logicApi.GetBalls(), width, height);
+        SimulationModel.SyncFromLogic(balls, width, height);
     }
 
     private void InvalidateCommands() => CommandManager.InvalidateRequerySuggested();
