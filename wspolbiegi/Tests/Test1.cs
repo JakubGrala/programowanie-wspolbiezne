@@ -33,19 +33,6 @@ public sealed class DataApiTests
     }
 
     [TestMethod]
-    public void AdvanceAll_ShouldMoveBallAccordingToVelocity()
-    {
-        IDataApi api = new DataApi(new InMemoryBallRepository());
-        api.CreateBall(0, 0, 5, 1, 10, 0);
-
-        api.AdvanceAll(0.5);
-
-        BallSnapshot snapshot = api.GetSnapshots()[0];
-        Assert.AreEqual(5, snapshot.X, 1e-6);
-        Assert.AreEqual(0, snapshot.Y, 1e-6);
-    }
-
-    [TestMethod]
     public void GetSnapshots_ConcurrentReads_ShouldNotThrow()
     {
         IDataApi api = new DataApi(new InMemoryBallRepository());
@@ -55,7 +42,6 @@ public sealed class DataApiTests
         Parallel.For(0, 200, _ =>
         {
             _ = api.GetSnapshots().Count;
-            api.AdvanceAll(0.01);
         });
     }
 }
@@ -104,9 +90,9 @@ public sealed class LogicApiTests
     }
 
     [TestMethod]
-    public void SimulationStep_ShouldKeepBallsInsidePlane()
+    public void CollisionDetection_ShouldKeepBallsInsidePlane()
     {
-        IDataApi dataApi = new FakeDataApi();
+        FakeDataApi dataApi = new FakeDataApi();
         ILogicApi logicApi = new LogicApi(dataApi, new DefaultRandomProvider());
 
         logicApi.CreatePlaneAsync(200, 150).GetAwaiter().GetResult();
@@ -114,7 +100,11 @@ public sealed class LogicApiTests
 
         for (int i = 0; i < 800; i++)
         {
-            logicApi.SimulationStep(1.0 / 60.0);
+            foreach (var ball in dataApi.GetRawBalls())
+            {
+                ball.Advance(1.0 / 60.0);
+                dataApi.RaisePositionChanged(ball);
+            }
         }
 
         foreach (BallSnapshot ball in dataApi.GetSnapshots())
@@ -129,7 +119,7 @@ public sealed class LogicApiTests
     [TestMethod]
     public void ElasticCollision_ShouldExchangeMomentumAlongNormal()
     {
-        IDataApi dataApi = new FakeDataApi();
+        FakeDataApi dataApi = new FakeDataApi();
         ILogicApi logicApi = new LogicApi(dataApi, new DefaultRandomProvider());
 
         logicApi.CreatePlaneAsync(400, 200).GetAwaiter().GetResult();
@@ -138,7 +128,11 @@ public sealed class LogicApiTests
 
         for (int i = 0; i < 5; i++)
         {
-            logicApi.SimulationStep(1.0 / 120.0);
+            foreach (var ball in dataApi.GetRawBalls())
+            {
+                ball.Advance(1.0 / 120.0);
+                dataApi.RaisePositionChanged(ball);
+            }
         }
 
         BallSnapshot left = dataApi.GetSnapshots().OrderBy(snapshot => snapshot.X).First();
@@ -153,6 +147,12 @@ internal sealed class FakeDataApi : IDataApi
 {
     private readonly List<Ball> balls = [];
 
+    public event System.EventHandler<BallEventArgs>? BallPositionChanged;
+
+    public void RaisePositionChanged(Ball ball) => BallPositionChanged?.Invoke(this, new BallEventArgs(ball));
+
+    public IReadOnlyList<Ball> GetRawBalls() => balls.AsReadOnly();
+
     public Ball CreateBall(double x, double y, double radius, double mass, double velocityX, double velocityY)
     {
         Ball ball = new(x, y, radius, mass, velocityX, velocityY);
@@ -164,13 +164,9 @@ internal sealed class FakeDataApi : IDataApi
 
     public void ClearBalls() => balls.Clear();
 
-    public void AdvanceAll(double deltaSeconds)
-    {
-        foreach (Ball ball in balls)
-        {
-            ball.Advance(deltaSeconds);
-        }
-    }
+    public void StartAll() { }
+
+    public void StopAll() { }
 
     public void SetPosition(Ball ball, double x, double y) => ball.SetPosition(x, y);
 

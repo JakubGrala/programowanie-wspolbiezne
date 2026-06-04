@@ -15,10 +15,9 @@ public sealed class IntegrationTests
         logicApi.CreatePlaneAsync(220, 160).GetAwaiter().GetResult();
         logicApi.PlaceBallsAsync(10, 14).GetAwaiter().GetResult();
 
-        for (int i = 0; i < 1200; i++)
-        {
-            logicApi.SimulationStep(1.0 / 60.0);
-        }
+        logicApi.StartSimulationAsync().GetAwaiter().GetResult();
+        System.Threading.Thread.Sleep(500);
+        logicApi.StopSimulationAsync().GetAwaiter().GetResult();
 
         foreach (BallSnapshot ball in dataApi.GetSnapshots())
         {

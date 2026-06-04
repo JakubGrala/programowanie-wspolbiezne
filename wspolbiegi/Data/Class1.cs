@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace Data;
 
@@ -32,13 +34,25 @@ public readonly struct BallSnapshot
     public double VelocityY { get; }
 }
 
-public sealed class Ball
+public class BallEventArgs : EventArgs
+{
+    public BallEventArgs(Ball ball)
+    {
+        Ball = ball;
+    }
+
+    public Ball Ball { get; }
+}
+
+public sealed class Ball : IDisposable
 {
     private readonly object sync = new();
     private double x;
     private double y;
     private double velocityX;
     private double velocityY;
+    private CancellationTokenSource? cancellationTokenSource;
+    private Task? moveTask;
 
     public Ball(double x, double y, double radius, double mass, double velocityX, double velocityY)
     {
@@ -59,6 +73,8 @@ public sealed class Ball
         this.velocityX = velocityX;
         this.velocityY = velocityY;
     }
+
+    public event EventHandler<BallEventArgs>? PositionChanged;
 
     public double Radius { get; }
 
@@ -96,6 +112,50 @@ public sealed class Ball
         {
             velocityX = newVelocityX;
             velocityY = newVelocityY;
+        }
+    }
+
+    public void Start()
+    {
+        if (cancellationTokenSource != null)
+        {
+            return;
+        }
+
+        cancellationTokenSource = new CancellationTokenSource();
+        moveTask = Task.Run(() => MoveLoopAsync(cancellationTokenSource.Token));
+    }
+
+    public void Stop()
+    {
+        cancellationTokenSource?.Cancel();
+        moveTask?.Wait();
+        cancellationTokenSource?.Dispose();
+        cancellationTokenSource = null;
+        moveTask = null;
+    }
+
+    public void Dispose()
+    {
+        Stop();
+    }
+
+    private async Task MoveLoopAsync(CancellationToken cancellationToken)
+    {
+        const double deltaSeconds = 0.015;
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            Advance(deltaSeconds);
+            PositionChanged?.Invoke(this, new BallEventArgs(this));
+
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(deltaSeconds), cancellationToken).ConfigureAwait(false);
+            }
+            catch (TaskCanceledException)
+            {
+                break;
+            }
         }
     }
 }
@@ -144,20 +204,24 @@ public sealed class InMemoryBallRepository : IBallRepository
 
 public interface IDataApi
 {
+    event EventHandler<BallEventArgs>? BallPositionChanged;
+
     Ball CreateBall(double x, double y, double radius, double mass, double velocityX, double velocityY);
 
     IReadOnlyList<BallSnapshot> GetSnapshots();
 
     void ClearBalls();
 
-    void AdvanceAll(double deltaSeconds);
+    void StartAll();
+
+    void StopAll();
 
     void SetPosition(Ball ball, double x, double y);
 
     void SetVelocity(Ball ball, double velocityX, double velocityY);
 }
 
-public sealed class DataApi : IDataApi
+public sealed class DataApi : IDataApi, IDisposable
 {
     private readonly IBallRepository repository;
 
@@ -166,23 +230,56 @@ public sealed class DataApi : IDataApi
         this.repository = repository ?? throw new ArgumentNullException(nameof(repository));
     }
 
-    public Ball CreateBall(double x, double y, double radius, double mass, double velocityX, double velocityY) =>
-        repository.Add(x, y, radius, mass, velocityX, velocityY);
+    public event EventHandler<BallEventArgs>? BallPositionChanged;
+
+    public Ball CreateBall(double x, double y, double radius, double mass, double velocityX, double velocityY)
+    {
+        Ball ball = repository.Add(x, y, radius, mass, velocityX, velocityY);
+        ball.PositionChanged += OnBallPositionChanged;
+        return ball;
+    }
 
     public IReadOnlyList<BallSnapshot> GetSnapshots() =>
         repository.GetAll().Select(ball => ball.GetSnapshot()).ToList().AsReadOnly();
 
-    public void ClearBalls() => repository.Clear();
+    public void ClearBalls()
+    {
+        StopAll();
+        foreach (var ball in repository.GetAll())
+        {
+            ball.PositionChanged -= OnBallPositionChanged;
+            ball.Dispose();
+        }
+        repository.Clear();
+    }
 
-    public void AdvanceAll(double deltaSeconds)
+    public void StartAll()
     {
         foreach (Ball ball in repository.GetAll())
         {
-            ball.Advance(deltaSeconds);
+            ball.Start();
+        }
+    }
+
+    public void StopAll()
+    {
+        foreach (Ball ball in repository.GetAll())
+        {
+            ball.Stop();
         }
     }
 
     public void SetPosition(Ball ball, double x, double y) => ball.SetPosition(x, y);
 
     public void SetVelocity(Ball ball, double velocityX, double velocityY) => ball.SetVelocity(velocityX, velocityY);
+
+    public void Dispose()
+    {
+        ClearBalls();
+    }
+
+    private void OnBallPositionChanged(object? sender, BallEventArgs e)
+    {
+        BallPositionChanged?.Invoke(this, e);
+    }
 }

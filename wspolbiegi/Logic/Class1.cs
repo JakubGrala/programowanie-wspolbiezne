@@ -76,8 +76,6 @@ public interface ILogicApi
     Task StopSimulationAsync();
 
     bool IsSimulationRunning { get; }
-
-    void SimulationStep(double deltaSeconds);
 }
 
 public interface IRandomProvider
@@ -111,6 +109,7 @@ public sealed class LogicApi : ILogicApi
     {
         this.dataApi = dataApi ?? throw new ArgumentNullException(nameof(dataApi));
         this.randomProvider = randomProvider ?? throw new ArgumentNullException(nameof(randomProvider));
+        this.dataApi.BallPositionChanged += OnBallPositionChanged;
     }
 
     public event EventHandler<BallsUpdatedEventArgs>? BallsUpdated;
@@ -154,8 +153,7 @@ public sealed class LogicApi : ILogicApi
             }
 
             simulationRunning = true;
-            simulationCancellation = new CancellationTokenSource();
-            simulationTask = Task.Run(() => SimulationLoopAsync(simulationCancellation.Token));
+            dataApi.StartAll();
         }
 
         await Task.CompletedTask.ConfigureAwait(false);
@@ -163,59 +161,28 @@ public sealed class LogicApi : ILogicApi
 
     public async Task StopSimulationAsync()
     {
-        CancellationTokenSource? cancellation = simulationCancellation;
-        Task? runningTask = simulationTask;
-
         lock (integrationCriticalSection)
         {
             simulationRunning = false;
-            simulationCancellation = null;
-            simulationTask = null;
         }
-
-        if (cancellation is not null)
-        {
-            cancellation.Cancel();
-        }
-
-        if (runningTask is not null)
-        {
-            try
-            {
-                await runningTask.ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-            }
-        }
+        dataApi.StopAll();
+        await Task.CompletedTask.ConfigureAwait(false);
     }
 
-    public void SimulationStep(double deltaSeconds)
+    private void OnBallPositionChanged(object? sender, BallEventArgs e)
     {
+        IReadOnlyList<LogicBall> balls;
         lock (integrationCriticalSection)
         {
             Plane plane = currentPlane ?? throw new InvalidOperationException("Plane is not initialized.");
 
-            dataApi.AdvanceAll(deltaSeconds);
-            ResolveWallCollisions(plane);
-            ResolveBallCollisions();
+            ResolveWallCollisions(plane, e.Ball);
+            ResolveBallCollisions(e.Ball);
+            
+            balls = BuildLogicBalls();
         }
-    }
 
-    private async Task SimulationLoopAsync(CancellationToken cancellationToken)
-    {
-        while (!cancellationToken.IsCancellationRequested && simulationRunning)
-        {
-            IReadOnlyList<LogicBall> balls;
-            lock (integrationCriticalSection)
-            {
-                SimulationStep(SimulationDeltaSeconds);
-                balls = BuildLogicBalls();
-            }
-
-            BallsUpdated?.Invoke(this, new BallsUpdatedEventArgs(balls));
-            await Task.Delay(SimulationDelayMilliseconds, cancellationToken).ConfigureAwait(false);
-        }
+        BallsUpdated?.Invoke(this, new BallsUpdatedEventArgs(balls));
     }
 
     private IReadOnlyCollection<LogicBall> PlaceBalls(int count, double radius)
@@ -271,44 +238,60 @@ public sealed class LogicApi : ILogicApi
             .ToList()
             .AsReadOnly();
 
-    private void ResolveWallCollisions(Plane plane)
+    private void ResolveWallCollisions(Plane plane, Ball movingBall)
     {
-        foreach (BallSnapshot snapshot in dataApi.GetSnapshots())
+        BallSnapshot snapshot = dataApi.GetSnapshots().First(s => s.Ball == movingBall);
+        
+        double x = snapshot.X;
+        double y = snapshot.Y;
+        double velocityX = snapshot.VelocityX;
+        double velocityY = snapshot.VelocityY;
+        double radius = snapshot.Radius;
+
+        bool positionChanged = false;
+        bool velocityChanged = false;
+
+        if (x - radius < 0)
         {
-            double x = snapshot.X;
-            double y = snapshot.Y;
-            double velocityX = snapshot.VelocityX;
-            double velocityY = snapshot.VelocityY;
-            double radius = snapshot.Radius;
+            x = radius;
+            velocityX = Math.Abs(velocityX);
+            positionChanged = true;
+            velocityChanged = true;
+        }
+        else if (x + radius > plane.Width)
+        {
+            x = plane.Width - radius;
+            velocityX = -Math.Abs(velocityX);
+            positionChanged = true;
+            velocityChanged = true;
+        }
 
-            if (x - radius < 0)
-            {
-                x = radius;
-                velocityX = Math.Abs(velocityX);
-            }
-            else if (x + radius > plane.Width)
-            {
-                x = plane.Width - radius;
-                velocityX = -Math.Abs(velocityX);
-            }
+        if (y - radius < 0)
+        {
+            y = radius;
+            velocityY = Math.Abs(velocityY);
+            positionChanged = true;
+            velocityChanged = true;
+        }
+        else if (y + radius > plane.Height)
+        {
+            y = plane.Height - radius;
+            velocityY = -Math.Abs(velocityY);
+            positionChanged = true;
+            velocityChanged = true;
+        }
 
-            if (y - radius < 0)
-            {
-                y = radius;
-                velocityY = Math.Abs(velocityY);
-            }
-            else if (y + radius > plane.Height)
-            {
-                y = plane.Height - radius;
-                velocityY = -Math.Abs(velocityY);
-            }
-
+        if (positionChanged)
+        {
             dataApi.SetPosition(snapshot.Ball, x, y);
+        }
+        if (velocityChanged)
+        {
             dataApi.SetVelocity(snapshot.Ball, velocityX, velocityY);
         }
     }
 
-    private void ResolveBallCollisions()
+    private void ResolveBallCollisions(Ball movingBall)
     {
         IReadOnlyList<BallSnapshot> snapshots = dataApi.GetSnapshots();
         if (snapshots.Count < 2)
@@ -316,30 +299,18 @@ public sealed class LogicApi : ILogicApi
             return;
         }
 
-        double maxRadius = snapshots.Max(snapshot => snapshot.Radius);
-        BallCollisionBinaryTree tree = BallCollisionBinaryTree.Build(snapshots);
-        HashSet<(Ball BallA, Ball BallB)> processedPairs = [];
+        BallSnapshot first = snapshots.First(s => s.Ball == movingBall);
 
-        foreach (BallSnapshot first in snapshots)
+        foreach (BallSnapshot second in snapshots)
         {
-            foreach (BallSnapshot second in tree.FindCandidates(first, first.Radius + maxRadius))
+            if (first.Ball == second.Ball)
             {
-                if (first.Ball == second.Ball)
-                {
-                    continue;
-                }
-
-                (Ball left, Ball right) = first.Ball.GetHashCode() < second.Ball.GetHashCode()
-                    ? (first.Ball, second.Ball)
-                    : (second.Ball, first.Ball);
-
-                if (!processedPairs.Add((left, right)))
-                {
-                    continue;
-                }
-
-                ResolveBallPair(left, right);
+                continue;
             }
+
+            ResolveBallPair(first.Ball, second.Ball);
+            
+            first = dataApi.GetSnapshots().First(s => s.Ball == movingBall);
         }
     }
 
