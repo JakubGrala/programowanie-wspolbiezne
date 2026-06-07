@@ -1,6 +1,10 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
 using System.Linq;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -8,8 +12,9 @@ namespace Data;
 
 public readonly struct BallSnapshot
 {
-    public BallSnapshot(Ball ball, double x, double y, double radius, double mass, double velocityX, double velocityY)
+    public BallSnapshot(Guid id, Ball ball, double x, double y, double radius, double mass, double velocityX, double velocityY)
     {
+        Id = id;
         Ball = ball;
         X = x;
         Y = y;
@@ -18,6 +23,8 @@ public readonly struct BallSnapshot
         VelocityX = velocityX;
         VelocityY = velocityY;
     }
+
+    public Guid Id { get; }
 
     public Ball Ball { get; }
 
@@ -66,6 +73,7 @@ public sealed class Ball : IDisposable
             throw new ArgumentOutOfRangeException(nameof(mass), "Mass must be greater than zero.");
         }
 
+        Id = Guid.NewGuid();
         this.x = x;
         this.y = y;
         Radius = radius;
@@ -76,6 +84,8 @@ public sealed class Ball : IDisposable
 
     public event EventHandler<BallEventArgs>? PositionChanged;
 
+    public Guid Id { get; }
+
     public double Radius { get; }
 
     public double Mass { get; }
@@ -84,7 +94,7 @@ public sealed class Ball : IDisposable
     {
         lock (sync)
         {
-            return new BallSnapshot(this, x, y, Radius, Mass, velocityX, velocityY);
+            return new BallSnapshot(Id, this, x, y, Radius, Mass, velocityX, velocityY);
         }
     }
 
@@ -142,15 +152,23 @@ public sealed class Ball : IDisposable
 
     private async Task MoveLoopAsync(CancellationToken cancellationToken)
     {
-        const double deltaSeconds = 0.015;
+        Stopwatch stopwatch = new Stopwatch();
+        stopwatch.Start();
+
         while (!cancellationToken.IsCancellationRequested)
         {
-            Advance(deltaSeconds);
+            double elapsedSeconds = stopwatch.Elapsed.TotalSeconds;
+            stopwatch.Restart();
+
+            if (elapsedSeconds > 0.1) elapsedSeconds = 0.1;
+            if (elapsedSeconds <= 0) elapsedSeconds = 0.015;
+
+            Advance(elapsedSeconds);
             PositionChanged?.Invoke(this, new BallEventArgs(this));
 
             try
             {
-                await Task.Delay(TimeSpan.FromSeconds(deltaSeconds), cancellationToken).ConfigureAwait(false);
+                await Task.Delay(15, cancellationToken).ConfigureAwait(false);
             }
             catch (TaskCanceledException)
             {
@@ -224,10 +242,12 @@ public interface IDataApi
 public sealed class DataApi : IDataApi, IDisposable
 {
     private readonly IBallRepository repository;
+    private readonly DataLogger logger;
 
     public DataApi(IBallRepository repository)
     {
         this.repository = repository ?? throw new ArgumentNullException(nameof(repository));
+        this.logger = new DataLogger();
     }
 
     public event EventHandler<BallEventArgs>? BallPositionChanged;
@@ -276,10 +296,63 @@ public sealed class DataApi : IDataApi, IDisposable
     public void Dispose()
     {
         ClearBalls();
+        logger.Dispose();
     }
 
     private void OnBallPositionChanged(object? sender, BallEventArgs e)
     {
+        logger.Log(e.Ball.GetSnapshot());
         BallPositionChanged?.Invoke(this, e);
+    }
+}
+
+internal sealed class DataLogger : IDisposable
+{
+    private readonly BlockingCollection<string> queue = new();
+    private readonly Task writeTask;
+    private readonly CancellationTokenSource cancellationTokenSource = new();
+
+    public DataLogger()
+    {
+        writeTask = Task.Run(WriteLoop);
+    }
+
+    public void Log(BallSnapshot snapshot)
+    {
+        if (cancellationTokenSource.IsCancellationRequested) return;
+
+        string logEntry = $@"{{
+    ""Timestamp"": ""{DateTime.UtcNow:O}"",
+    ""Id"": ""{snapshot.Id}"",
+    ""X"": {snapshot.X.ToString(System.Globalization.CultureInfo.InvariantCulture)},
+    ""Y"": {snapshot.Y.ToString(System.Globalization.CultureInfo.InvariantCulture)},
+    ""VelocityX"": {snapshot.VelocityX.ToString(System.Globalization.CultureInfo.InvariantCulture)},
+    ""VelocityY"": {snapshot.VelocityY.ToString(System.Globalization.CultureInfo.InvariantCulture)}
+}}";
+
+        queue.Add(logEntry);
+    }
+
+    private void WriteLoop()
+    {
+        using var streamWriter = new StreamWriter("diagnostic.log", append: false, Encoding.ASCII);
+        try
+        {
+            foreach (var message in queue.GetConsumingEnumerable(cancellationTokenSource.Token))
+            {
+                streamWriter.WriteLine(message);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    public void Dispose()
+    {
+        cancellationTokenSource.Cancel();
+        writeTask.Wait();
+        cancellationTokenSource.Dispose();
+        queue.Dispose();
     }
 }

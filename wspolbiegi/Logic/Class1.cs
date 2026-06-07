@@ -101,8 +101,7 @@ public sealed class LogicApi : ILogicApi
     private readonly object integrationCriticalSection = new();
 
     private Plane? currentPlane;
-    private CancellationTokenSource? simulationCancellation;
-    private Task? simulationTask;
+
     private volatile bool simulationRunning;
 
     public LogicApi(IDataApi dataApi, IRandomProvider randomProvider)
