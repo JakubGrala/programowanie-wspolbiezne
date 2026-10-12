@@ -1,4 +1,5 @@
 using System.Linq;
+using System.Text;
 using Data;
 using Logic;
 
@@ -10,11 +11,12 @@ public sealed class DataApiTests
     [TestMethod]
     public void CreateBall_ShouldStoreBallWithExpectedValues()
     {
-        IDataApi api = new DataApi(new InMemoryBallRepository());
+        IDataApi api = new DataApi(new FakeDiagnosticLogger());
 
-        Ball created = api.CreateBall(10, 20, 5, 2, 3, 4);
+        IBall created = api.CreateBall(10, 20, 5, 2, 3, 4);
 
-        BallSnapshot snapshot = created.GetSnapshot();
+        BallSnapshot snapshot = api.GetSnapshots().Single(s => s.Ball == created);
+        Assert.AreEqual(created.Id, snapshot.Id);
         Assert.AreEqual(10, snapshot.X);
         Assert.AreEqual(20, snapshot.Y);
         Assert.AreEqual(5, snapshot.Radius);
@@ -27,7 +29,7 @@ public sealed class DataApiTests
     [TestMethod]
     public void CreateBall_WithInvalidRadius_ShouldThrow()
     {
-        IDataApi api = new DataApi(new InMemoryBallRepository());
+        IDataApi api = new DataApi(new FakeDiagnosticLogger());
 
         Assert.ThrowsException<ArgumentOutOfRangeException>(() => api.CreateBall(0, 0, 0, 1, 0, 0));
     }
@@ -35,7 +37,7 @@ public sealed class DataApiTests
     [TestMethod]
     public void GetSnapshots_ConcurrentReads_ShouldNotThrow()
     {
-        IDataApi api = new DataApi(new InMemoryBallRepository());
+        IDataApi api = new DataApi(new FakeDiagnosticLogger());
         api.CreateBall(10, 10, 8, 1, 5, 5);
         api.CreateBall(30, 30, 8, 1, -4, 2);
 
@@ -43,6 +45,77 @@ public sealed class DataApiTests
         {
             _ = api.GetSnapshots().Count;
         });
+    }
+
+    [TestMethod]
+    public void MoveBy_ShouldShiftPositionRelatively()
+    {
+        IDataApi api = new DataApi(new FakeDiagnosticLogger());
+        IBall ball = api.CreateBall(10, 20, 5, 1, 0, 0);
+
+        api.MoveBy(ball, 3, -4);
+
+        BallSnapshot snapshot = api.GetSnapshots().Single(s => s.Ball == ball);
+        Assert.AreEqual(13, snapshot.X, 1e-9);
+        Assert.AreEqual(16, snapshot.Y, 1e-9);
+    }
+
+    [TestMethod]
+    public void MovingBalls_ShouldBeLogged()
+    {
+        FakeDiagnosticLogger logger = new();
+        using DataApi api = new(logger);
+        api.CreateBall(100, 100, 5, 1, 50, 0);
+
+        api.StartAll();
+        Thread.Sleep(200);
+        api.StopAll();
+
+        Assert.IsTrue(logger.Count > 0);
+    }
+
+    [TestMethod]
+    public void SlowDiagnosticWriter_ShouldNotSlowDownBalls()
+    {
+        SlowTextWriter slowWriter = new(TimeSpan.FromMilliseconds(100));
+        DataApi api = new(new DataLogger(slowWriter));
+        int moves = 0;
+        api.BallPositionChanged += (_, _) => Interlocked.Increment(ref moves);
+        api.CreateBall(100, 100, 5, 1, 50, 0);
+
+        api.StartAll();
+        Thread.Sleep(300);
+        api.StopAll();
+        int movesWhileRunning = Volatile.Read(ref moves);
+
+        api.Dispose();
+
+        Assert.IsTrue(movesWhileRunning >= 10, $"Ball moved only {movesWhileRunning} times.");
+        Assert.AreEqual(movesWhileRunning, slowWriter.LinesWritten, "Every ball move should be written to the log.");
+    }
+}
+
+[TestClass]
+public sealed class DataLoggerTests
+{
+    [TestMethod]
+    public void Log_ShouldNotWaitForSlowWriter_AndDisposeShouldWriteEverything()
+    {
+        SlowTextWriter slowWriter = new(TimeSpan.FromMilliseconds(20));
+        DataLogger logger = new(slowWriter);
+        BallSnapshot snapshot = new(Guid.NewGuid(), new FakeBall(1, 2, 3, 4, 5, 6), 1, 2, 3, 4, 5, 6);
+
+        System.Diagnostics.Stopwatch stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        for (int i = 0; i < 30; i++)
+        {
+            logger.Log(snapshot);
+        }
+        stopwatch.Stop();
+
+        logger.Dispose();
+
+        Assert.IsTrue(stopwatch.ElapsedMilliseconds < 200, $"Logging took {stopwatch.ElapsedMilliseconds} ms.");
+        Assert.AreEqual(30, slowWriter.LinesWritten);
     }
 }
 
@@ -145,22 +218,25 @@ public sealed class LogicApiTests
 
 internal sealed class FakeDataApi : IDataApi
 {
-    private readonly List<Ball> balls = [];
+    private readonly List<FakeBall> balls = [];
 
     public event System.EventHandler<BallEventArgs>? BallPositionChanged;
 
-    public void RaisePositionChanged(Ball ball) => BallPositionChanged?.Invoke(this, new BallEventArgs(ball));
+    public void RaisePositionChanged(IBall ball) => BallPositionChanged?.Invoke(this, new BallEventArgs(ball));
 
-    public IReadOnlyList<Ball> GetRawBalls() => balls.AsReadOnly();
+    public IReadOnlyList<FakeBall> GetRawBalls() => balls.AsReadOnly();
 
-    public Ball CreateBall(double x, double y, double radius, double mass, double velocityX, double velocityY)
+    public IBall CreateBall(double x, double y, double radius, double mass, double velocityX, double velocityY)
     {
-        Ball ball = new(x, y, radius, mass, velocityX, velocityY);
+        FakeBall ball = new(x, y, radius, mass, velocityX, velocityY);
         balls.Add(ball);
         return ball;
     }
 
-    public IReadOnlyList<BallSnapshot> GetSnapshots() => balls.Select(ball => ball.GetSnapshot()).ToList().AsReadOnly();
+    public IReadOnlyList<BallSnapshot> GetSnapshots() =>
+        balls.Select(ball => new BallSnapshot(ball.Id, ball, ball.X, ball.Y, ball.Radius, ball.Mass, ball.VelocityX, ball.VelocityY))
+            .ToList()
+            .AsReadOnly();
 
     public void ClearBalls() => balls.Clear();
 
@@ -168,7 +244,89 @@ internal sealed class FakeDataApi : IDataApi
 
     public void StopAll() { }
 
-    public void SetPosition(Ball ball, double x, double y) => ball.SetPosition(x, y);
+    public void SetPosition(IBall ball, double x, double y)
+    {
+        FakeBall fake = (FakeBall)ball;
+        fake.X = x;
+        fake.Y = y;
+    }
 
-    public void SetVelocity(Ball ball, double velocityX, double velocityY) => ball.SetVelocity(velocityX, velocityY);
+    public void MoveBy(IBall ball, double deltaX, double deltaY)
+    {
+        FakeBall fake = (FakeBall)ball;
+        fake.X += deltaX;
+        fake.Y += deltaY;
+    }
+
+    public void SetVelocity(IBall ball, double velocityX, double velocityY)
+    {
+        FakeBall fake = (FakeBall)ball;
+        fake.VelocityX = velocityX;
+        fake.VelocityY = velocityY;
+    }
+}
+
+internal sealed class FakeBall : IBall
+{
+    public FakeBall(double x, double y, double radius, double mass, double velocityX, double velocityY)
+    {
+        X = x;
+        Y = y;
+        Radius = radius;
+        Mass = mass;
+        VelocityX = velocityX;
+        VelocityY = velocityY;
+    }
+
+    public Guid Id { get; } = Guid.NewGuid();
+
+    public double Radius { get; }
+
+    public double Mass { get; }
+
+    public double X { get; set; }
+
+    public double Y { get; set; }
+
+    public double VelocityX { get; set; }
+
+    public double VelocityY { get; set; }
+
+    public void Advance(double deltaSeconds)
+    {
+        X += VelocityX * deltaSeconds;
+        Y += VelocityY * deltaSeconds;
+    }
+}
+
+internal sealed class FakeDiagnosticLogger : IDiagnosticLogger
+{
+    private int count;
+
+    public int Count => Volatile.Read(ref count);
+
+    public void Log(BallSnapshot snapshot) => Interlocked.Increment(ref count);
+
+    public void Dispose() { }
+}
+
+internal sealed class SlowTextWriter : TextWriter
+{
+    private readonly TimeSpan delay;
+    private int linesWritten;
+
+    public SlowTextWriter(TimeSpan delay)
+    {
+        this.delay = delay;
+    }
+
+    public int LinesWritten => Volatile.Read(ref linesWritten);
+
+    public override Encoding Encoding => Encoding.ASCII;
+
+    public override void WriteLine(string? value)
+    {
+        Thread.Sleep(delay);
+        Interlocked.Increment(ref linesWritten);
+    }
 }

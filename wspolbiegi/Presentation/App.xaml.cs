@@ -8,13 +8,13 @@ namespace Presentation;
 public partial class App : Application
 {
     private MainViewModel? mainViewModel;
+    private DataApi? dataApi;
 
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
 
-        IBallRepository repository = new InMemoryBallRepository();
-        IDataApi dataApi = new DataApi(repository);
+        dataApi = new DataApi();
         IRandomProvider randomProvider = new DefaultRandomProvider();
         ILogicApi logicApi = new LogicApi(dataApi, randomProvider);
         mainViewModel = new MainViewModel(logicApi);
@@ -29,6 +29,7 @@ public partial class App : Application
     protected override void OnExit(ExitEventArgs e)
     {
         mainViewModel?.Dispose();
+        dataApi?.Dispose();
         base.OnExit(e);
     }
 }

@@ -10,9 +10,23 @@ using System.Threading.Tasks;
 
 namespace Data;
 
+public interface IBall
+{
+    Guid Id { get; }
+
+    double Radius { get; }
+
+    double Mass { get; }
+}
+
+public interface IDiagnosticLogger : IDisposable
+{
+    void Log(BallSnapshot snapshot);
+}
+
 public readonly struct BallSnapshot
 {
-    public BallSnapshot(Guid id, Ball ball, double x, double y, double radius, double mass, double velocityX, double velocityY)
+    public BallSnapshot(Guid id, IBall ball, double x, double y, double radius, double mass, double velocityX, double velocityY)
     {
         Id = id;
         Ball = ball;
@@ -26,7 +40,7 @@ public readonly struct BallSnapshot
 
     public Guid Id { get; }
 
-    public Ball Ball { get; }
+    public IBall Ball { get; }
 
     public double X { get; }
 
@@ -43,15 +57,15 @@ public readonly struct BallSnapshot
 
 public class BallEventArgs : EventArgs
 {
-    public BallEventArgs(Ball ball)
+    public BallEventArgs(IBall ball)
     {
         Ball = ball;
     }
 
-    public Ball Ball { get; }
+    public IBall Ball { get; }
 }
 
-public sealed class Ball : IDisposable
+internal sealed class Ball : IBall, IDisposable
 {
     private readonly object sync = new();
     private double x;
@@ -104,6 +118,15 @@ public sealed class Ball : IDisposable
         {
             x += velocityX * deltaSeconds;
             y += velocityY * deltaSeconds;
+        }
+    }
+
+    public void MoveBy(double deltaX, double deltaY)
+    {
+        lock (sync)
+        {
+            x += deltaX;
+            y += deltaY;
         }
     }
 
@@ -178,7 +201,7 @@ public sealed class Ball : IDisposable
     }
 }
 
-public interface IBallRepository
+internal interface IBallRepository
 {
     Ball Add(double x, double y, double radius, double mass, double velocityX, double velocityY);
 
@@ -187,7 +210,7 @@ public interface IBallRepository
     void Clear();
 }
 
-public sealed class InMemoryBallRepository : IBallRepository
+internal sealed class InMemoryBallRepository : IBallRepository
 {
     private readonly object sync = new();
     private readonly List<Ball> balls = [];
@@ -224,7 +247,7 @@ public interface IDataApi
 {
     event EventHandler<BallEventArgs>? BallPositionChanged;
 
-    Ball CreateBall(double x, double y, double radius, double mass, double velocityX, double velocityY);
+    IBall CreateBall(double x, double y, double radius, double mass, double velocityX, double velocityY);
 
     IReadOnlyList<BallSnapshot> GetSnapshots();
 
@@ -234,25 +257,37 @@ public interface IDataApi
 
     void StopAll();
 
-    void SetPosition(Ball ball, double x, double y);
+    void SetPosition(IBall ball, double x, double y);
 
-    void SetVelocity(Ball ball, double velocityX, double velocityY);
+    void MoveBy(IBall ball, double deltaX, double deltaY);
+
+    void SetVelocity(IBall ball, double velocityX, double velocityY);
 }
 
 public sealed class DataApi : IDataApi, IDisposable
 {
     private readonly IBallRepository repository;
-    private readonly DataLogger logger;
+    private readonly IDiagnosticLogger logger;
 
-    public DataApi(IBallRepository repository)
+    public DataApi()
+        : this(new InMemoryBallRepository(), new DataLogger("diagnostic.log"))
+    {
+    }
+
+    public DataApi(IDiagnosticLogger logger)
+        : this(new InMemoryBallRepository(), logger)
+    {
+    }
+
+    internal DataApi(IBallRepository repository, IDiagnosticLogger logger)
     {
         this.repository = repository ?? throw new ArgumentNullException(nameof(repository));
-        this.logger = new DataLogger();
+        this.logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
     public event EventHandler<BallEventArgs>? BallPositionChanged;
 
-    public Ball CreateBall(double x, double y, double radius, double mass, double velocityX, double velocityY)
+    public IBall CreateBall(double x, double y, double radius, double mass, double velocityX, double velocityY)
     {
         Ball ball = repository.Add(x, y, radius, mass, velocityX, velocityY);
         ball.PositionChanged += OnBallPositionChanged;
@@ -289,9 +324,11 @@ public sealed class DataApi : IDataApi, IDisposable
         }
     }
 
-    public void SetPosition(Ball ball, double x, double y) => ball.SetPosition(x, y);
+    public void SetPosition(IBall ball, double x, double y) => AsDataBall(ball).SetPosition(x, y);
 
-    public void SetVelocity(Ball ball, double velocityX, double velocityY) => ball.SetVelocity(velocityX, velocityY);
+    public void MoveBy(IBall ball, double deltaX, double deltaY) => AsDataBall(ball).MoveBy(deltaX, deltaY);
+
+    public void SetVelocity(IBall ball, double velocityX, double velocityY) => AsDataBall(ball).SetVelocity(velocityX, velocityY);
 
     public void Dispose()
     {
@@ -299,27 +336,37 @@ public sealed class DataApi : IDataApi, IDisposable
         logger.Dispose();
     }
 
+    private static Ball AsDataBall(IBall ball) =>
+        ball as Ball ?? throw new ArgumentException("Ball was not created by this Data layer.", nameof(ball));
+
     private void OnBallPositionChanged(object? sender, BallEventArgs e)
     {
-        logger.Log(e.Ball.GetSnapshot());
+        logger.Log(AsDataBall(e.Ball).GetSnapshot());
         BallPositionChanged?.Invoke(this, e);
     }
 }
 
-internal sealed class DataLogger : IDisposable
+public sealed class DataLogger : IDiagnosticLogger
 {
     private readonly BlockingCollection<string> queue = new();
+    private readonly TextWriter writer;
     private readonly Task writeTask;
-    private readonly CancellationTokenSource cancellationTokenSource = new();
+    private volatile bool disposed;
 
-    public DataLogger()
+    public DataLogger(string filePath)
+        : this(new StreamWriter(filePath, append: false, Encoding.ASCII))
     {
+    }
+
+    public DataLogger(TextWriter writer)
+    {
+        this.writer = writer ?? throw new ArgumentNullException(nameof(writer));
         writeTask = Task.Run(WriteLoop);
     }
 
     public void Log(BallSnapshot snapshot)
     {
-        if (cancellationTokenSource.IsCancellationRequested) return;
+        if (disposed) return;
 
         string logEntry = $@"{{
     ""Timestamp"": ""{DateTime.UtcNow:O}"",
@@ -330,29 +377,33 @@ internal sealed class DataLogger : IDisposable
     ""VelocityY"": {snapshot.VelocityY.ToString(System.Globalization.CultureInfo.InvariantCulture)}
 }}";
 
-        queue.Add(logEntry);
+        try
+        {
+            queue.Add(logEntry);
+        }
+        catch (InvalidOperationException)
+        {
+        }
     }
 
     private void WriteLoop()
     {
-        using var streamWriter = new StreamWriter("diagnostic.log", append: false, Encoding.ASCII);
-        try
+        foreach (string message in queue.GetConsumingEnumerable())
         {
-            foreach (var message in queue.GetConsumingEnumerable(cancellationTokenSource.Token))
-            {
-                streamWriter.WriteLine(message);
-            }
+            writer.WriteLine(message);
         }
-        catch (OperationCanceledException)
-        {
-        }
+
+        writer.Flush();
     }
 
     public void Dispose()
     {
-        cancellationTokenSource.Cancel();
+        if (disposed) return;
+        disposed = true;
+
+        queue.CompleteAdding();
         writeTask.Wait();
-        cancellationTokenSource.Dispose();
+        writer.Dispose();
         queue.Dispose();
     }
 }
