@@ -13,8 +13,7 @@ public partial class App : Application
     {
         base.OnStartup(e);
 
-        IBallRepository repository = new InMemoryBallRepository();
-        IDataApi dataApi = new DataApi(repository);
+        IDataApi dataApi = new DataApi();
         IRandomProvider randomProvider = new DefaultRandomProvider();
         ILogicApi logicApi = new LogicApi(dataApi, randomProvider);
         mainViewModel = new MainViewModel(logicApi);

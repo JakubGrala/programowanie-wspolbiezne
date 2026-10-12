@@ -6,9 +6,16 @@ using System.Threading.Tasks;
 
 namespace Data;
 
+public interface IBall
+{
+    double Radius { get; }
+
+    double Mass { get; }
+}
+
 public readonly struct BallSnapshot
 {
-    public BallSnapshot(Ball ball, double x, double y, double radius, double mass, double velocityX, double velocityY)
+    public BallSnapshot(IBall ball, double x, double y, double radius, double mass, double velocityX, double velocityY)
     {
         Ball = ball;
         X = x;
@@ -19,7 +26,7 @@ public readonly struct BallSnapshot
         VelocityY = velocityY;
     }
 
-    public Ball Ball { get; }
+    public IBall Ball { get; }
 
     public double X { get; }
 
@@ -36,15 +43,15 @@ public readonly struct BallSnapshot
 
 public class BallEventArgs : EventArgs
 {
-    public BallEventArgs(Ball ball)
+    public BallEventArgs(IBall ball)
     {
         Ball = ball;
     }
 
-    public Ball Ball { get; }
+    public IBall Ball { get; }
 }
 
-public sealed class Ball : IDisposable
+internal sealed class Ball : IBall, IDisposable
 {
     private readonly object sync = new();
     private double x;
@@ -160,7 +167,7 @@ public sealed class Ball : IDisposable
     }
 }
 
-public interface IBallRepository
+internal interface IBallRepository
 {
     Ball Add(double x, double y, double radius, double mass, double velocityX, double velocityY);
 
@@ -169,7 +176,7 @@ public interface IBallRepository
     void Clear();
 }
 
-public sealed class InMemoryBallRepository : IBallRepository
+internal sealed class InMemoryBallRepository : IBallRepository
 {
     private readonly object sync = new();
     private readonly List<Ball> balls = [];
@@ -206,7 +213,7 @@ public interface IDataApi
 {
     event EventHandler<BallEventArgs>? BallPositionChanged;
 
-    Ball CreateBall(double x, double y, double radius, double mass, double velocityX, double velocityY);
+    IBall CreateBall(double x, double y, double radius, double mass, double velocityX, double velocityY);
 
     IReadOnlyList<BallSnapshot> GetSnapshots();
 
@@ -216,23 +223,28 @@ public interface IDataApi
 
     void StopAll();
 
-    void SetPosition(Ball ball, double x, double y);
+    void SetPosition(IBall ball, double x, double y);
 
-    void SetVelocity(Ball ball, double velocityX, double velocityY);
+    void SetVelocity(IBall ball, double velocityX, double velocityY);
 }
 
 public sealed class DataApi : IDataApi, IDisposable
 {
     private readonly IBallRepository repository;
 
-    public DataApi(IBallRepository repository)
+    public DataApi()
+        : this(new InMemoryBallRepository())
+    {
+    }
+
+    internal DataApi(IBallRepository repository)
     {
         this.repository = repository ?? throw new ArgumentNullException(nameof(repository));
     }
 
     public event EventHandler<BallEventArgs>? BallPositionChanged;
 
-    public Ball CreateBall(double x, double y, double radius, double mass, double velocityX, double velocityY)
+    public IBall CreateBall(double x, double y, double radius, double mass, double velocityX, double velocityY)
     {
         Ball ball = repository.Add(x, y, radius, mass, velocityX, velocityY);
         ball.PositionChanged += OnBallPositionChanged;
@@ -269,14 +281,17 @@ public sealed class DataApi : IDataApi, IDisposable
         }
     }
 
-    public void SetPosition(Ball ball, double x, double y) => ball.SetPosition(x, y);
+    public void SetPosition(IBall ball, double x, double y) => AsDataBall(ball).SetPosition(x, y);
 
-    public void SetVelocity(Ball ball, double velocityX, double velocityY) => ball.SetVelocity(velocityX, velocityY);
+    public void SetVelocity(IBall ball, double velocityX, double velocityY) => AsDataBall(ball).SetVelocity(velocityX, velocityY);
 
     public void Dispose()
     {
         ClearBalls();
     }
+
+    private static Ball AsDataBall(IBall ball) =>
+        ball as Ball ?? throw new ArgumentException("Ball was not created by this Data layer.", nameof(ball));
 
     private void OnBallPositionChanged(object? sender, BallEventArgs e)
     {

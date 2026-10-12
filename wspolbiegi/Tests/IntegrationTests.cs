@@ -9,7 +9,7 @@ public sealed class IntegrationTests
     [TestMethod]
     public void DataAndLogic_Together_ShouldRunSimulationWithoutLeavingPlane()
     {
-        IDataApi dataApi = new DataApi(new InMemoryBallRepository());
+        IDataApi dataApi = new DataApi();
         ILogicApi logicApi = new LogicApi(dataApi, new DefaultRandomProvider());
 
         logicApi.CreatePlaneAsync(220, 160).GetAwaiter().GetResult();

@@ -10,11 +10,11 @@ public sealed class DataApiTests
     [TestMethod]
     public void CreateBall_ShouldStoreBallWithExpectedValues()
     {
-        IDataApi api = new DataApi(new InMemoryBallRepository());
+        IDataApi api = new DataApi();
 
-        Ball created = api.CreateBall(10, 20, 5, 2, 3, 4);
+        IBall created = api.CreateBall(10, 20, 5, 2, 3, 4);
 
-        BallSnapshot snapshot = created.GetSnapshot();
+        BallSnapshot snapshot = api.GetSnapshots().Single(s => s.Ball == created);
         Assert.AreEqual(10, snapshot.X);
         Assert.AreEqual(20, snapshot.Y);
         Assert.AreEqual(5, snapshot.Radius);
@@ -27,7 +27,7 @@ public sealed class DataApiTests
     [TestMethod]
     public void CreateBall_WithInvalidRadius_ShouldThrow()
     {
-        IDataApi api = new DataApi(new InMemoryBallRepository());
+        IDataApi api = new DataApi();
 
         Assert.ThrowsException<ArgumentOutOfRangeException>(() => api.CreateBall(0, 0, 0, 1, 0, 0));
     }
@@ -35,7 +35,7 @@ public sealed class DataApiTests
     [TestMethod]
     public void GetSnapshots_ConcurrentReads_ShouldNotThrow()
     {
-        IDataApi api = new DataApi(new InMemoryBallRepository());
+        IDataApi api = new DataApi();
         api.CreateBall(10, 10, 8, 1, 5, 5);
         api.CreateBall(30, 30, 8, 1, -4, 2);
 
@@ -145,22 +145,25 @@ public sealed class LogicApiTests
 
 internal sealed class FakeDataApi : IDataApi
 {
-    private readonly List<Ball> balls = [];
+    private readonly List<FakeBall> balls = [];
 
     public event System.EventHandler<BallEventArgs>? BallPositionChanged;
 
-    public void RaisePositionChanged(Ball ball) => BallPositionChanged?.Invoke(this, new BallEventArgs(ball));
+    public void RaisePositionChanged(IBall ball) => BallPositionChanged?.Invoke(this, new BallEventArgs(ball));
 
-    public IReadOnlyList<Ball> GetRawBalls() => balls.AsReadOnly();
+    public IReadOnlyList<FakeBall> GetRawBalls() => balls.AsReadOnly();
 
-    public Ball CreateBall(double x, double y, double radius, double mass, double velocityX, double velocityY)
+    public IBall CreateBall(double x, double y, double radius, double mass, double velocityX, double velocityY)
     {
-        Ball ball = new(x, y, radius, mass, velocityX, velocityY);
+        FakeBall ball = new(x, y, radius, mass, velocityX, velocityY);
         balls.Add(ball);
         return ball;
     }
 
-    public IReadOnlyList<BallSnapshot> GetSnapshots() => balls.Select(ball => ball.GetSnapshot()).ToList().AsReadOnly();
+    public IReadOnlyList<BallSnapshot> GetSnapshots() =>
+        balls.Select(ball => new BallSnapshot(ball, ball.X, ball.Y, ball.Radius, ball.Mass, ball.VelocityX, ball.VelocityY))
+            .ToList()
+            .AsReadOnly();
 
     public void ClearBalls() => balls.Clear();
 
@@ -168,7 +171,48 @@ internal sealed class FakeDataApi : IDataApi
 
     public void StopAll() { }
 
-    public void SetPosition(Ball ball, double x, double y) => ball.SetPosition(x, y);
+    public void SetPosition(IBall ball, double x, double y)
+    {
+        FakeBall fake = (FakeBall)ball;
+        fake.X = x;
+        fake.Y = y;
+    }
 
-    public void SetVelocity(Ball ball, double velocityX, double velocityY) => ball.SetVelocity(velocityX, velocityY);
+    public void SetVelocity(IBall ball, double velocityX, double velocityY)
+    {
+        FakeBall fake = (FakeBall)ball;
+        fake.VelocityX = velocityX;
+        fake.VelocityY = velocityY;
+    }
+}
+
+internal sealed class FakeBall : IBall
+{
+    public FakeBall(double x, double y, double radius, double mass, double velocityX, double velocityY)
+    {
+        X = x;
+        Y = y;
+        Radius = radius;
+        Mass = mass;
+        VelocityX = velocityX;
+        VelocityY = velocityY;
+    }
+
+    public double Radius { get; }
+
+    public double Mass { get; }
+
+    public double X { get; set; }
+
+    public double Y { get; set; }
+
+    public double VelocityX { get; set; }
+
+    public double VelocityY { get; set; }
+
+    public void Advance(double deltaSeconds)
+    {
+        X += VelocityX * deltaSeconds;
+        Y += VelocityY * deltaSeconds;
+    }
 }

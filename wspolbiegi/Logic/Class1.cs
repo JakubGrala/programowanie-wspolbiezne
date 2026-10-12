@@ -238,7 +238,7 @@ public sealed class LogicApi : ILogicApi
             .ToList()
             .AsReadOnly();
 
-    private void ResolveWallCollisions(Plane plane, Ball movingBall)
+    private void ResolveWallCollisions(Plane plane, IBall movingBall)
     {
         BallSnapshot snapshot = dataApi.GetSnapshots().First(s => s.Ball == movingBall);
         
@@ -291,7 +291,7 @@ public sealed class LogicApi : ILogicApi
         }
     }
 
-    private void ResolveBallCollisions(Ball movingBall)
+    private void ResolveBallCollisions(IBall movingBall)
     {
         IReadOnlyList<BallSnapshot> snapshots = dataApi.GetSnapshots();
         if (snapshots.Count < 2)
@@ -314,7 +314,7 @@ public sealed class LogicApi : ILogicApi
         }
     }
 
-    private void ResolveBallPair(Ball firstBall, Ball secondBall)
+    private void ResolveBallPair(IBall firstBall, IBall secondBall)
     {
         BallSnapshot first = dataApi.GetSnapshots().First(snapshot => snapshot.Ball == firstBall);
         BallSnapshot second = dataApi.GetSnapshots().First(snapshot => snapshot.Ball == secondBall);
