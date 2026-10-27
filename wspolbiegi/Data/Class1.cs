@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -74,6 +73,7 @@ internal sealed class Ball : IBall, IDisposable
     private double velocityY;
     private CancellationTokenSource? cancellationTokenSource;
     private Task? moveTask;
+    private static readonly TimeSpan MovePeriod = TimeSpan.FromMilliseconds(20);
 
     public Ball(double x, double y, double radius, double mass, double velocityX, double velocityY)
     {
@@ -175,28 +175,18 @@ internal sealed class Ball : IBall, IDisposable
 
     private async Task MoveLoopAsync(CancellationToken cancellationToken)
     {
-        Stopwatch stopwatch = new Stopwatch();
-        stopwatch.Start();
+        using PeriodicTimer timer = new PeriodicTimer(MovePeriod);
 
-        while (!cancellationToken.IsCancellationRequested)
+        try
         {
-            double elapsedSeconds = stopwatch.Elapsed.TotalSeconds;
-            stopwatch.Restart();
-
-            if (elapsedSeconds > 0.1) elapsedSeconds = 0.1;
-            if (elapsedSeconds <= 0) elapsedSeconds = 0.015;
-
-            Advance(elapsedSeconds);
-            PositionChanged?.Invoke(this, new BallEventArgs(this));
-
-            try
+            while (await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
             {
-                await Task.Delay(15, cancellationToken).ConfigureAwait(false);
+                Advance(MovePeriod.TotalSeconds);
+                PositionChanged?.Invoke(this, new BallEventArgs(this));
             }
-            catch (TaskCanceledException)
-            {
-                break;
-            }
+        }
+        catch (OperationCanceledException)
+        {
         }
     }
 }
