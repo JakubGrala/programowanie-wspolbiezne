@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -74,6 +75,8 @@ internal sealed class Ball : IBall, IDisposable
     private CancellationTokenSource? cancellationTokenSource;
     private Task? moveTask;
     private static readonly TimeSpan MovePeriod = TimeSpan.FromMilliseconds(20);
+    private static readonly long MovePeriodTicks = (long)(MovePeriod.TotalSeconds * Stopwatch.Frequency);
+    private const double MaxStepSeconds = 0.1;
 
     public Ball(double x, double y, double radius, double mass, double velocityX, double velocityY)
     {
@@ -175,14 +178,33 @@ internal sealed class Ball : IBall, IDisposable
 
     private async Task MoveLoopAsync(CancellationToken cancellationToken)
     {
-        using PeriodicTimer timer = new PeriodicTimer(MovePeriod);
+        long lastTimestamp = Stopwatch.GetTimestamp();
+        long nextTick = lastTimestamp + MovePeriodTicks;
 
         try
         {
-            while (await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
+            while (!cancellationToken.IsCancellationRequested)
             {
-                Advance(MovePeriod.TotalSeconds);
+                long now = Stopwatch.GetTimestamp();
+                if (nextTick > now)
+                {
+                    TimeSpan sleepTime = TimeSpan.FromSeconds((nextTick - now) / (double)Stopwatch.Frequency);
+                    await Task.Delay(sleepTime, cancellationToken).ConfigureAwait(false);
+                    now = Stopwatch.GetTimestamp();
+                }
+
+                double elapsedSeconds = (now - lastTimestamp) / (double)Stopwatch.Frequency;
+                lastTimestamp = now;
+
+                Advance(Math.Min(elapsedSeconds, MaxStepSeconds));
                 PositionChanged?.Invoke(this, new BallEventArgs(this));
+
+                nextTick += MovePeriodTicks;
+                long afterStep = Stopwatch.GetTimestamp();
+                if (afterStep - nextTick >= MovePeriodTicks)
+                {
+                    nextTick += ((afterStep - nextTick) / MovePeriodTicks) * MovePeriodTicks;
+                }
             }
         }
         catch (OperationCanceledException)
