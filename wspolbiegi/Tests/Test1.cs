@@ -238,18 +238,17 @@ internal sealed class FakeDataApi : IDataApi
             .ToList()
             .AsReadOnly();
 
+    public BallSnapshot GetSnapshot(IBall ball)
+    {
+        FakeBall fake = (FakeBall)ball;
+        return new BallSnapshot(fake.Id, fake, fake.X, fake.Y, fake.Radius, fake.Mass, fake.VelocityX, fake.VelocityY);
+    }
+
     public void ClearBalls() => balls.Clear();
 
     public void StartAll() { }
 
     public void StopAll() { }
-
-    public void SetPosition(IBall ball, double x, double y)
-    {
-        FakeBall fake = (FakeBall)ball;
-        fake.X = x;
-        fake.Y = y;
-    }
 
     public void MoveBy(IBall ball, double deltaX, double deltaY)
     {

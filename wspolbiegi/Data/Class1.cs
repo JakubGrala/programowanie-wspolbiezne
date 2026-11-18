@@ -133,15 +133,6 @@ internal sealed class Ball : IBall, IDisposable
         }
     }
 
-    public void SetPosition(double newX, double newY)
-    {
-        lock (sync)
-        {
-            x = newX;
-            y = newY;
-        }
-    }
-
     public void SetVelocity(double newVelocityX, double newVelocityY)
     {
         lock (sync)
@@ -162,9 +153,14 @@ internal sealed class Ball : IBall, IDisposable
         moveTask = Task.Run(() => MoveLoopAsync(cancellationTokenSource.Token));
     }
 
-    public void Stop()
+    public void RequestStop()
     {
         cancellationTokenSource?.Cancel();
+    }
+
+    public void Stop()
+    {
+        RequestStop();
         moveTask?.Wait();
         cancellationTokenSource?.Dispose();
         cancellationTokenSource = null;
@@ -201,9 +197,9 @@ internal sealed class Ball : IBall, IDisposable
 
                 nextTick += MovePeriodTicks;
                 long afterStep = Stopwatch.GetTimestamp();
-                if (afterStep - nextTick >= MovePeriodTicks)
+                if (nextTick <= afterStep)
                 {
-                    nextTick += ((afterStep - nextTick) / MovePeriodTicks) * MovePeriodTicks;
+                    nextTick += (((afterStep - nextTick) / MovePeriodTicks) + 1) * MovePeriodTicks;
                 }
             }
         }
@@ -263,13 +259,13 @@ public interface IDataApi
 
     IReadOnlyList<BallSnapshot> GetSnapshots();
 
+    BallSnapshot GetSnapshot(IBall ball);
+
     void ClearBalls();
 
     void StartAll();
 
     void StopAll();
-
-    void SetPosition(IBall ball, double x, double y);
 
     void MoveBy(IBall ball, double deltaX, double deltaY);
 
@@ -309,6 +305,8 @@ public sealed class DataApi : IDataApi, IDisposable
     public IReadOnlyList<BallSnapshot> GetSnapshots() =>
         repository.GetAll().Select(ball => ball.GetSnapshot()).ToList().AsReadOnly();
 
+    public BallSnapshot GetSnapshot(IBall ball) => AsDataBall(ball).GetSnapshot();
+
     public void ClearBalls()
     {
         StopAll();
@@ -330,13 +328,18 @@ public sealed class DataApi : IDataApi, IDisposable
 
     public void StopAll()
     {
-        foreach (Ball ball in repository.GetAll())
+        IReadOnlyList<Ball> balls = repository.GetAll();
+
+        foreach (Ball ball in balls)
+        {
+            ball.RequestStop();
+        }
+
+        foreach (Ball ball in balls)
         {
             ball.Stop();
         }
     }
-
-    public void SetPosition(IBall ball, double x, double y) => AsDataBall(ball).SetPosition(x, y);
 
     public void MoveBy(IBall ball, double deltaX, double deltaY) => AsDataBall(ball).MoveBy(deltaX, deltaY);
 

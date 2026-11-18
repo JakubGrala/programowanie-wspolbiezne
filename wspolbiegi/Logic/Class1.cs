@@ -93,8 +93,7 @@ public sealed class DefaultRandomProvider : IRandomProvider
 public sealed class LogicApi : ILogicApi
 {
     private const double InitialSpeed = 180.0;
-    private const double SimulationDeltaSeconds = 1.0 / 60.0;
-    private const int SimulationDelayMilliseconds = 16;
+    private const int MaxPlacementAttempts = 1000;
 
     private readonly IDataApi dataApi;
     private readonly IRandomProvider randomProvider;
@@ -176,7 +175,7 @@ public sealed class LogicApi : ILogicApi
             Plane plane = currentPlane ?? throw new InvalidOperationException("Plane is not initialized.");
 
             ResolveWallCollisions(plane, e.Ball);
-            ResolveBallCollisions(e.Ball);
+            ResolveBallCollisions(plane, e.Ball);
             
             balls = BuildLogicBalls();
         }
@@ -203,12 +202,36 @@ public sealed class LogicApi : ILogicApi
             throw new InvalidOperationException("Plane is too small for the requested ball radius.");
         }
 
-        dataApi.ClearBalls();
+        List<(double X, double Y)> positions = new List<(double X, double Y)>();
+        double minDistanceSquared = (2 * radius) * (2 * radius);
 
         for (int i = 0; i < count; i++)
         {
-            double x = minX + ((maxX - minX) * randomProvider.NextDouble());
-            double y = minY + ((maxY - minY) * randomProvider.NextDouble());
+            bool placed = false;
+
+            for (int attempt = 0; attempt < MaxPlacementAttempts && !placed; attempt++)
+            {
+                double x = minX + ((maxX - minX) * randomProvider.NextDouble());
+                double y = minY + ((maxY - minY) * randomProvider.NextDouble());
+
+                bool overlaps = positions.Any(p => ((p.X - x) * (p.X - x)) + ((p.Y - y) * (p.Y - y)) < minDistanceSquared);
+                if (!overlaps)
+                {
+                    positions.Add((x, y));
+                    placed = true;
+                }
+            }
+
+            if (!placed)
+            {
+                break;
+            }
+        }
+
+        dataApi.ClearBalls();
+
+        foreach ((double x, double y) in positions)
+        {
             double mass = radius * radius * (0.85 + (0.3 * randomProvider.NextDouble()));
             Velocity2D velocity = CreateRandomVelocity();
             dataApi.CreateBall(x, y, radius, mass, velocity.VelocityX, velocity.VelocityY);
@@ -239,7 +262,7 @@ public sealed class LogicApi : ILogicApi
 
     private void ResolveWallCollisions(Plane plane, IBall movingBall)
     {
-        BallSnapshot snapshot = dataApi.GetSnapshots().First(s => s.Ball == movingBall);
+        BallSnapshot snapshot = dataApi.GetSnapshot(movingBall);
         
         double x = snapshot.X;
         double y = snapshot.Y;
@@ -282,7 +305,7 @@ public sealed class LogicApi : ILogicApi
 
         if (positionChanged)
         {
-            dataApi.SetPosition(snapshot.Ball, x, y);
+            dataApi.MoveBy(snapshot.Ball, x - snapshot.X, y - snapshot.Y);
         }
         if (velocityChanged)
         {
@@ -290,33 +313,25 @@ public sealed class LogicApi : ILogicApi
         }
     }
 
-    private void ResolveBallCollisions(IBall movingBall)
+    private void ResolveBallCollisions(Plane plane, IBall movingBall)
     {
         IReadOnlyList<BallSnapshot> snapshots = dataApi.GetSnapshots();
-        if (snapshots.Count < 2)
-        {
-            return;
-        }
 
-        BallSnapshot first = snapshots.First(s => s.Ball == movingBall);
-
-        foreach (BallSnapshot second in snapshots)
+        foreach (BallSnapshot other in snapshots)
         {
-            if (first.Ball == second.Ball)
+            if (other.Ball == movingBall)
             {
                 continue;
             }
 
-            ResolveBallPair(first.Ball, second.Ball);
-            
-            first = dataApi.GetSnapshots().First(s => s.Ball == movingBall);
+            ResolveBallPair(plane, movingBall, other.Ball);
         }
     }
 
-    private void ResolveBallPair(IBall firstBall, IBall secondBall)
+    private void ResolveBallPair(Plane plane, IBall firstBall, IBall secondBall)
     {
-        BallSnapshot first = dataApi.GetSnapshots().First(snapshot => snapshot.Ball == firstBall);
-        BallSnapshot second = dataApi.GetSnapshots().First(snapshot => snapshot.Ball == secondBall);
+        BallSnapshot first = dataApi.GetSnapshot(firstBall);
+        BallSnapshot second = dataApi.GetSnapshot(secondBall);
 
         double deltaX = second.X - first.X;
         double deltaY = second.Y - first.Y;
@@ -349,22 +364,23 @@ public sealed class LogicApi : ILogicApi
         double relativeVelocityY = second.VelocityY - first.VelocityY;
         double velocityAlongNormal = (relativeVelocityX * normalX) + (relativeVelocityY * normalY);
 
-        if (velocityAlongNormal > 0)
+        if (velocityAlongNormal <= 0)
         {
-            return;
+            double impulseScalar = -(2 * velocityAlongNormal) / ((1 / first.Mass) + (1 / second.Mass));
+            double impulseX = impulseScalar * normalX;
+            double impulseY = impulseScalar * normalY;
+
+            double firstVelocityX = first.VelocityX - (impulseX / first.Mass);
+            double firstVelocityY = first.VelocityY - (impulseY / first.Mass);
+            double secondVelocityX = second.VelocityX + (impulseX / second.Mass);
+            double secondVelocityY = second.VelocityY + (impulseY / second.Mass);
+
+            dataApi.SetVelocity(first.Ball, firstVelocityX, firstVelocityY);
+            dataApi.SetVelocity(second.Ball, secondVelocityX, secondVelocityY);
         }
 
-        double impulseScalar = -(2 * velocityAlongNormal) / ((1 / first.Mass) + (1 / second.Mass));
-        double impulseX = impulseScalar * normalX;
-        double impulseY = impulseScalar * normalY;
-
-        double firstVelocityX = first.VelocityX - (impulseX / first.Mass);
-        double firstVelocityY = first.VelocityY - (impulseY / first.Mass);
-        double secondVelocityX = second.VelocityX + (impulseX / second.Mass);
-        double secondVelocityY = second.VelocityY + (impulseY / second.Mass);
-
-        dataApi.SetVelocity(first.Ball, firstVelocityX, firstVelocityY);
-        dataApi.SetVelocity(second.Ball, secondVelocityX, secondVelocityY);
+        ResolveWallCollisions(plane, firstBall);
+        ResolveWallCollisions(plane, secondBall);
     }
 
     private sealed class Plane
@@ -388,108 +404,5 @@ public sealed class LogicApi : ILogicApi
         public double Width { get; }
 
         public double Height { get; }
-    }
-}
-
-internal sealed class BallCollisionBinaryTree
-{
-    private readonly Node? root;
-
-    private BallCollisionBinaryTree(Node? root)
-    {
-        this.root = root;
-    }
-
-    public static BallCollisionBinaryTree Build(IReadOnlyList<BallSnapshot> snapshots)
-    {
-        List<BallSnapshot> sorted = snapshots.OrderBy(snapshot => snapshot.X).ToList();
-        Node? rootNode = BuildNode(sorted, 0, sorted.Count - 1);
-        return new BallCollisionBinaryTree(rootNode);
-    }
-
-    public IEnumerable<BallSnapshot> FindCandidates(BallSnapshot target, double pairDistance)
-    {
-        if (root is null)
-        {
-            yield break;
-        }
-
-        foreach (BallSnapshot candidate in Search(root, target.X - pairDistance, target.X + pairDistance))
-        {
-            if (candidate.Ball != target.Ball)
-            {
-                yield return candidate;
-            }
-        }
-    }
-
-    private static IEnumerable<BallSnapshot> Search(Node? node, double minX, double maxX)
-    {
-        if (node is null)
-        {
-            yield break;
-        }
-
-        if (node.Snapshot.X < minX)
-        {
-            foreach (BallSnapshot snapshot in Search(node.Right, minX, maxX))
-            {
-                yield return snapshot;
-            }
-
-            yield break;
-        }
-
-        if (node.Snapshot.X > maxX)
-        {
-            foreach (BallSnapshot snapshot in Search(node.Left, minX, maxX))
-            {
-                yield return snapshot;
-            }
-
-            yield break;
-        }
-
-        yield return node.Snapshot;
-
-        foreach (BallSnapshot left in Search(node.Left, minX, maxX))
-        {
-            yield return left;
-        }
-
-        foreach (BallSnapshot right in Search(node.Right, minX, maxX))
-        {
-            yield return right;
-        }
-    }
-
-    private static Node? BuildNode(List<BallSnapshot> sorted, int leftIndex, int rightIndex)
-    {
-        if (leftIndex > rightIndex)
-        {
-            return null;
-        }
-
-        int middle = (leftIndex + rightIndex) / 2;
-        return new Node(
-            sorted[middle],
-            BuildNode(sorted, leftIndex, middle - 1),
-            BuildNode(sorted, middle + 1, rightIndex));
-    }
-
-    private sealed class Node
-    {
-        public Node(BallSnapshot snapshot, Node? left, Node? right)
-        {
-            Snapshot = snapshot;
-            Left = left;
-            Right = right;
-        }
-
-        public BallSnapshot Snapshot { get; }
-
-        public Node? Left { get; }
-
-        public Node? Right { get; }
     }
 }

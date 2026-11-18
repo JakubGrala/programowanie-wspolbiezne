@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
+using System.Threading;
 using System.Windows;
 using System.Windows.Input;
 using Logic;
@@ -23,6 +24,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private string ballCountText = "8";
     private bool hasBalls;
     private IReadOnlyCollection<LogicBall>? lastBalls;
+    private IReadOnlyCollection<LogicBall>? pendingBalls;
+    private int refreshPending;
 
     public MainViewModel(ILogicApi logicApi)
     {
@@ -82,9 +85,21 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     private void OnBallsUpdated(object? sender, BallsUpdatedEventArgs e)
     {
+        Volatile.Write(ref pendingBalls, e.Balls);
+
+        if (Interlocked.Exchange(ref refreshPending, 1) == 1)
+        {
+            return;
+        }
+
         _ = Application.Current.Dispatcher.BeginInvoke(() =>
         {
-            RefreshVisualization(e.Balls);
+            Interlocked.Exchange(ref refreshPending, 0);
+            IReadOnlyCollection<LogicBall>? balls = Volatile.Read(ref pendingBalls);
+            if (balls is not null)
+            {
+                RefreshVisualization(balls);
+            }
         });
     }
 
@@ -105,6 +120,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         await logicApi.CreatePlaneAsync(LogicalPlaneWidth, LogicalPlaneHeight).ConfigureAwait(true);
         IReadOnlyCollection<LogicBall> balls = await logicApi.PlaceBallsAsync(count, BallRadius).ConfigureAwait(true);
         hasBalls = balls.Count > 0;
+        BallCountText = balls.Count.ToString();
         RefreshVisualization(balls);
         InvalidateCommands();
     }
